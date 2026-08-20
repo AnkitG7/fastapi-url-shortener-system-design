@@ -77,6 +77,18 @@ TOTAL COVERAGE: 90%
 
 ---
 
+## ⚡ Run High-Concurrency Load Tests
+
+```bash
+# Run multi-scenario async benchmark (Redirect QPS, Write Throughput, Rate Limiting)
+python scripts/load_test.py
+```
+
+For full empirical benchmark results (P50/P95/P99 latencies, QPS, and connection pool stability), see [docs/04_load_testing_benchmarks.md](docs/04_load_testing_benchmarks.md).
+
+
+---
+
 ## 📁 Project Structure
 
 ```
