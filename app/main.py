@@ -1,11 +1,13 @@
 # ======================================================
-# main.py — FastAPI Application Entry Point (with Background Workers)
+# main.py — FastAPI Application Entry Point (with Observability)
 # ======================================================
-# SYSTEM DESIGN CONCEPT: Multi-Resource Lifecycle & Background Worker Management
+# SYSTEM DESIGN CONCEPT: Observability & Production Middleware Pipeline
 # -------------------------------------------------
-# Lifespan:
-# 1. Startup: Init PostgreSQL, check Redis, start AnalyticsWorker loop
-# 2. Shutdown: Gracefully drain worker queue, close Redis & DB pools
+# Pipeline:
+#   Request -> [LoggingMiddleware (Correlation IDs & Latency)]
+#           -> [CORSMiddleware]
+#           -> [RateLimiter & Auth Dependency]
+#           -> Route Handler
 # ======================================================
 
 from contextlib import asynccontextmanager
@@ -14,11 +16,19 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.cache.redis_client import check_redis_health, close_redis_pool
 from app.core.config import get_settings
+from app.core.logging_config import setup_logging
 from app.db.database import engine
 from app.db.models import Base
+from app.middleware.logging_middleware import LoggingMiddleware
 from app.routes.analytics import router as analytics_router
+from app.routes.health import router as health_router
 from app.routes.url import redirect_router, router as url_router
 from app.workers.analytics_worker import get_analytics_worker
+
+settings = get_settings()
+
+# Initialize structured JSON logging
+setup_logging(debug=settings.debug)
 
 
 @asynccontextmanager
@@ -26,7 +36,6 @@ async def lifespan(app: FastAPI):
     """
     Application lifespan manager.
     """
-    settings = get_settings()
     print(f"[START] Starting {settings.app_name} v{settings.app_version}")
     print(f"[DOCS]  API docs available at {settings.base_url}/docs")
     print(f"[DEBUG] Debug mode: {settings.debug}")
@@ -62,8 +71,6 @@ async def lifespan(app: FastAPI):
     await close_redis_pool()
 
 
-settings = get_settings()
-
 app = FastAPI(
     title="URL Shortener API",
     description="""
@@ -77,7 +84,8 @@ A production-grade URL shortening service built with FastAPI, PostgreSQL, Redis,
 - **Sliding Window Rate Limiting** — Redis Sorted Sets rate limiter
 - **SSRF Defense** — Private IP and cloud metadata protection
 - **Async Event-Driven Telemetry** — Producer-Consumer pattern with batch database writes
-- **Analytics Reporting** — Aggregated click telemetry & referrer breakdowns
+- **Observability** — Structured JSON logging, `X-Correlation-ID` tracing, and `/health/ready` probes
+- **Circuit Breaker** — Fault tolerance for external dependencies
     """,
     version=settings.app_version,
     lifespan=lifespan,
@@ -86,7 +94,10 @@ A production-grade URL shortening service built with FastAPI, PostgreSQL, Redis,
     openapi_url="/openapi.json",
 )
 
-# CORS Middleware
+# 1. Logging & Distributed Tracing Middleware (Outer-most)
+app.add_middleware(LoggingMiddleware)
+
+# 2. CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -96,6 +107,7 @@ app.add_middleware(
 )
 
 # Mount Routers
+app.include_router(health_router)
 app.include_router(url_router)
 app.include_router(analytics_router)
 app.include_router(redirect_router)
@@ -112,6 +124,7 @@ async def root():
         "service": settings.app_name,
         "version": settings.app_version,
         "docs": f"{settings.base_url}/docs",
+        "health": f"{settings.base_url}/health/ready",
         "endpoints": {
             "shorten": "POST /api/v1/shorten",
             "redirect": "GET /{short_code}",
@@ -119,5 +132,7 @@ async def root():
             "analytics": "GET /api/v1/urls/{short_code}/analytics",
             "list": "GET /api/v1/urls",
             "delete": "DELETE /api/v1/urls/{short_code}",
+            "liveness": "GET /health/live",
+            "readiness": "GET /health/ready",
         },
     }

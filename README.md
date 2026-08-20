@@ -15,8 +15,8 @@ This project teaches **20+ system design concepts** across 7 phases:
 | **3. Caching & Performance** | Redis, Cache-Aside Pattern, TTL, Cache Invalidation, Graceful Degradation | ✅ Done |
 | **4. Auth, Rate Limiting & Security** | Sliding Window Log (Redis ZSET), Tiered API Keys, SSRF Prevention, HTTP 429 | ✅ Done |
 | **5. Async Processing & Analytics** | Producer-Consumer Pattern, Event Bus, Background Batch Worker, CQRS Aggregations | ✅ Done |
-| 6. Observability & Reliability | Structured Logging, Health Checks, Circuit Breakers | Up Next |
-| 7. Scaling | Docker, Load Balancing, Horizontal Scaling | Planned |
+| **6. Observability & Reliability** | Structured JSON Logging, Distributed Tracing (`X-Correlation-ID`), Health Probes, Circuit Breaker | ✅ Done |
+| 7. Scaling & Deployment | Dockerfile, Multi-Replica Clustering, Nginx Load Balancer | Up Next |
 
 ## 🚀 Quick Start
 
@@ -51,7 +51,7 @@ uvicorn app.main:app --reload --port 8000
 pytest tests/ -v
 ```
 
-**72 tests** covering all endpoints, background worker batching, event bus queue backpressure, analytics aggregation, sliding window rate limits, SSRF security defenses, caching behaviors, database repository layer, service business logic, validation, and redirects.
+**79 tests** covering all endpoints, circuit breaker state machine, correlation ID tracing, health check probes, background worker batching, event bus queue backpressure, analytics aggregation, sliding window rate limits, SSRF security defenses, caching behaviors, database repository layer, service business logic, validation, and redirects.
 
 ## 📁 Project Structure
 
@@ -64,6 +64,7 @@ pytest tests/ -v
 │   ├── dependencies.py      # Dependency injection (Auth, Rate Limiter, DB, Cache, Service)
 │   ├── core/
 │   │   ├── config.py        # Type-safe configuration (Pydantic Settings)
+│   │   ├── logging_config.py# Structured JSON logging formatter with contextvars
 │   │   └── security.py      # SSRF defense, private IP filtering, UserTier enum
 │   ├── db/
 │   │   ├── database.py      # Async engine, connection pooling, session factory
@@ -77,20 +78,25 @@ pytest tests/ -v
 │   │   └── analytics_worker.py # Async Background Worker for batch bulk inserts
 │   ├── middleware/
 │   │   ├── auth.py          # API key authentication & tier resolution
-│   │   └── rate_limiter.py  # Redis Sliding Window Log rate limiter via Sorted Sets
+│   │   ├── rate_limiter.py  # Redis Sliding Window Log rate limiter via Sorted Sets
+│   │   ├── logging_middleware.py # Request tracing (X-Correlation-ID) & latency logging
+│   │   └── circuit_breaker.py   # Circuit breaker pattern (CLOSED/OPEN/HALF_OPEN)
 │   ├── repositories/
 │   │   └── url_repository.py# Data Access Layer (Atomic updates, CRUD)
 │   ├── services/
-│   │   ├── url_service.py   # Business Logic Layer (Cache-Aside + DB Orchestration)
+│   │   └── url_service.py   # Business Logic Layer (Cache-Aside + DB Orchestration)
 │   │   └── analytics_service.py # Aggregation service (24h counts, referrers, user agents)
 │   ├── schemas/
 │   │   ├── url.py           # Request/Response data contracts
 │   │   └── analytics.py     # Analytics aggregation schemas
 │   └── routes/
 │       ├── url.py           # Rate-limited and SSRF-protected route handlers
-│       └── analytics.py     # Aggregated analytics reporting routes
+│       ├── analytics.py     # Aggregated analytics reporting routes
+│       └── health.py        # /health/live and /health/ready diagnostic probes
 ├── tests/
 │   ├── conftest.py          # Isolated test DB, fake Redis, and rate limiter fixtures
+│   ├── test_observability.py# Tracing headers and health probes tests
+│   ├── test_circuit_breaker.py # Circuit breaker state transition tests
 │   ├── test_analytics.py    # AnalyticsWorker batching & aggregation query tests
 │   ├── test_event_bus.py    # EventBus Producer-Consumer queue & backpressure tests
 │   ├── test_cache.py        # Cache-Aside, TTL, and invalidation tests
@@ -108,11 +114,10 @@ pytest tests/ -v
 └── .env                     # Environment config (gitignored)
 ```
 
-## 📖 System Design Concepts in Phase 5
+## 📖 System Design Concepts in Phase 6
 
-- **Non-Blocking Hot Path** — Decoupling redirect execution from analytics telemetry so users experience $<1\text{ms}$ redirect latency without waiting on database write operations.
-- **Producer-Consumer Pattern** — Redirect requests produce `ClickEvent` messages to an asynchronous queue; a background worker consumes and drains them.
-- **Batch / Bulk Writes** — Grouping individual click events into single multi-row `INSERT` statements to reduce database I/O round-trips by $50\times-100\times$.
-- **Bounded Queue & Backpressure** — Setting a capacity limit on the queue prevents server memory exhaustion during massive traffic surges.
-- **Graceful Worker Drain** — Ensuring any pending events in the queue are completely flushed to PostgreSQL on application shutdown to guarantee zero data loss.
-- **CQRS (Command Query Responsibility Segregation)** — Separating high-velocity write paths (asynchronous event ingestion) from analytical read paths (aggregate SQL queries).
+- **Structured JSON Logging** — Machine-readable logs containing timestamps, log levels, correlation IDs, and millisecond latencies for central ingestion in Datadog / Grafana Loki / ELK.
+- **Distributed Tracing & Correlation IDs** — Propagating `X-Correlation-ID` across HTTP headers, background workers, and logs to trace individual user requests across microservices.
+- **Liveness Probes (`/health/live`)** — Allows container orchestrators (Docker/Kubernetes) to detect deadlocked or hung processes and automatically restart them.
+- **Readiness Probes (`/health/ready`)** — Verifies PostgreSQL and Redis dependencies and latencies; load balancers automatically stop routing traffic to unhealthy instances.
+- **Circuit Breaker Pattern** — Prevents cascading system failures when downstream services fail by failing fast (`OPEN` state) and automatically recovering (`HALF_OPEN` -> `CLOSED`).
