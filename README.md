@@ -8,15 +8,15 @@ Every file is heavily commented with explanations of **WHY** things are done a c
 
 This project teaches **20+ system design concepts** across 7 phases:
 
-| Phase | Concepts |
-|-------|----------|
-| **1. API Design (current)** | REST, Data Contracts, Pagination, HTTP Status Codes |
-| 2. Database Layer | Schema Design, ORM, Repository Pattern, Migrations |
-| 3. Caching | Redis, Cache-Aside, TTL, Cache Invalidation |
-| 4. Auth & Rate Limiting | API Keys, Token Bucket, Middleware |
-| 5. Async Processing | Background Workers, Event-Driven Architecture |
-| 6. Observability | Structured Logging, Health Checks, Circuit Breakers |
-| 7. Scaling | Docker, Load Balancing, Horizontal Scaling |
+| Phase | Concepts | Status |
+|-------|----------|:------:|
+| **1. API Design** | REST, Data Contracts, Pagination, HTTP Status Codes | ✅ Done |
+| **2. Database Layer** | Schema Design, ORM, Repository Pattern, Migrations, Connection Pooling | ✅ Done |
+| 3. Caching | Redis, Cache-Aside, TTL, Cache Invalidation | Up Next |
+| 4. Auth & Rate Limiting | API Keys, Token Bucket, Middleware | Planned |
+| 5. Async Processing | Background Workers, Event-Driven Architecture | Planned |
+| 6. Observability | Structured Logging, Health Checks, Circuit Breakers | Planned |
+| 7. Scaling | Docker, Load Balancing, Horizontal Scaling | Planned |
 
 ## 🚀 Quick Start
 
@@ -25,14 +25,20 @@ This project teaches **20+ system design concepts** across 7 phases:
 git clone https://github.com/AnkitG7/fastapi-url-shortener-system-design.git
 cd fastapi-url-shortener-system-design
 
-# Setup
+# Start Database via Docker
+docker compose up -d postgres
+
+# Setup Virtual Environment
 python -m venv venv
 .\venv\Scripts\activate       # Windows
 # source venv/bin/activate    # Linux/Mac
 
 pip install -r requirements.txt
 
-# Run
+# Run Database Migrations
+alembic upgrade head
+
+# Run Application
 uvicorn app.main:app --reload --port 8000
 
 # Open Swagger UI
@@ -45,53 +51,52 @@ uvicorn app.main:app --reload --port 8000
 pytest tests/ -v
 ```
 
-**46 tests** covering all endpoints, validation, redirects, and edge cases.
+**51 tests** covering all endpoints, database repository layer, service business logic, validation, redirects, and edge cases.
 
 ## 📁 Project Structure
 
 ```
+├── alembic/                 # Database migrations (schema version control)
+│   ├── versions/            # Migration scripts
+│   └── env.py               # Migration environment configuration
 ├── app/
 │   ├── main.py              # FastAPI entry point, middleware, lifecycle
+│   ├── dependencies.py      # Dependency injection providers
 │   ├── core/
 │   │   └── config.py        # Type-safe configuration (Pydantic Settings)
+│   ├── db/
+│   │   ├── database.py      # Async engine, connection pooling, session factory
+│   │   └── models.py        # SQLAlchemy ORM models (indexes, constraints)
+│   ├── repositories/
+│   │   └── url_repository.py# Data Access Layer (Atomic updates, CRUD)
+│   ├── services/
+│   │   └── url_service.py   # Business Logic Layer (Domain rules & exceptions)
 │   ├── schemas/
 │   │   └── url.py           # Request/Response data contracts
 │   └── routes/
-│       └── url.py           # URL shortener CRUD + redirect endpoints
+│       └── url.py           # Clean Architecture route handlers
 ├── tests/
-│   ├── conftest.py          # Shared fixtures & test setup
+│   ├── conftest.py          # Isolated test DB fixtures & overrides
 │   ├── test_create_url.py   # POST /api/v1/shorten tests
 │   ├── test_read_url.py     # GET endpoints tests
 │   ├── test_delete_url.py   # DELETE endpoint tests
 │   ├── test_redirect.py     # Redirect & click tracking tests
-│   └── test_validation.py   # Input validation & boundary tests
+│   ├── test_validation.py   # Input validation & boundary tests
+│   ├── test_url_repository.py # Repository unit tests
+│   └── test_url_service.py    # Service domain rules tests
+├── docker-compose.yml       # Infrastructure as Code (PostgreSQL)
 ├── requirements.txt
 └── .env                     # Environment config (gitignored)
 ```
 
-## 🔌 API Endpoints
+## 📖 System Design Concepts in Phase 2
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/v1/shorten` | Create a short URL |
-| `GET` | `/{short_code}` | Redirect to original URL (307) |
-| `GET` | `/api/v1/urls/{short_code}` | Get URL details & stats |
-| `GET` | `/api/v1/urls` | List all URLs (paginated) |
-| `DELETE` | `/api/v1/urls/{short_code}` | Delete a URL |
-
-## 📖 System Design Concepts in Phase 1
-
-- **REST API Design** — Correct HTTP verbs, status codes, resource-based URLs
-- **Data Contracts** — Pydantic models for input validation & output serialization
-- **12-Factor App Config** — Environment-based configuration
-- **Singleton Pattern** — `@lru_cache` for settings
-- **ID Generation** — ShortUUID for short, unique, non-sequential codes
-- **Pagination** — Offset-based with enforced limits
-- **301 vs 307 Redirects** — Tradeoff between caching and analytics
-- **Information Hiding** — Public short codes, not internal database IDs
-- **CORS** — Cross-origin request handling
-- **Test Isolation** — Clean state per test, fixtures for reusable setup
-
----
-
-*Built as a learning project — read the code comments for deep-dive explanations!*
+- **Relational Schema Design** — Normalization, server-side timestamps (`func.now()`), constraints.
+- **Database Indexing** — B-tree index on `short_code` ($O(\log n)$ vs $O(n)$ full table scans) and `created_at`.
+- **Connection Pooling** — Reusing persistent connections to avoid expensive TCP/auth handshakes per query.
+- **Async I/O** — Non-blocking database calls enabling high concurrency.
+- **Repository Pattern** — Decoupling SQL queries and persistence from business rules.
+- **Clean Architecture & Service Layer** — Transport-agnostic domain logic with custom Domain Exceptions.
+- **Atomic Database Updates** — Avoiding concurrency race conditions during click counts via `click_count = click_count + 1`.
+- **Database Migrations (Alembic)** — Schema version control and automated migration history.
+- **Test Database Isolation** — Dependency overriding with in-memory async SQLite for fast and deterministic test runs.

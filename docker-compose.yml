@@ -1,0 +1,61 @@
+# ======================================================
+# docker-compose.yml — Local Infrastructure Services
+# ======================================================
+# SYSTEM DESIGN CONCEPT: Infrastructure as Code (IaC)
+# -------------------------------------------------
+# Instead of manually installing PostgreSQL on your machine,
+# we DEFINE our infrastructure in a file. This means:
+#
+# 1. REPRODUCIBLE — Anyone can run `docker compose up` and
+#    get the exact same setup (no "works on my machine")
+# 2. DISPOSABLE — `docker compose down` removes everything
+# 3. VERSION CONTROLLED — Infrastructure evolves with code
+# 4. ISOLATED — Each project has its own DB, no conflicts
+#
+# In production, this concept scales to Terraform, Kubernetes,
+# and cloud-native services — but the IDEA is the same:
+# define infrastructure in files, not manual clicks.
+# ======================================================
+
+services:
+  # =====================================================
+  # PostgreSQL — Relational Database
+  # =====================================================
+  # WHY PostgreSQL over MySQL/SQLite?
+  # 1. ACID compliance (Atomicity, Consistency, Isolation, Durability)
+  # 2. Advanced features (JSON columns, full-text search, CTEs)
+  # 3. Better concurrency (MVCC — Multi-Version Concurrency Control)
+  # 4. Industry standard for production systems
+  #
+  # SQLite is great for prototyping but can't handle:
+  # - Multiple concurrent writers
+  # - Network access (it's a file, not a server)
+  # - Connection pooling
+  # =====================================================
+  postgres:
+    image: postgres:16-alpine    # Alpine = smaller image (~80MB vs ~400MB)
+    container_name: url_shortener_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: url_shortener
+    ports:
+      - "5432:5432"              # Host:Container — access DB at localhost:5432
+    volumes:
+      # SYSTEM DESIGN CONCEPT: Data Persistence
+      # Without a volume, data is LOST when container restarts.
+      # Named volumes persist data across container restarts.
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # SYSTEM DESIGN CONCEPT: Health Checks
+      # Docker checks if the service is READY, not just RUNNING.
+      # A container can be running but the DB inside might still
+      # be initializing. Health checks prevent premature connections.
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+# Named volumes persist data across container restarts
+volumes:
+  postgres_data:

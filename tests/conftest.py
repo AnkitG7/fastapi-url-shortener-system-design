@@ -1,77 +1,83 @@
 # ======================================================
-# conftest.py — Shared Test Fixtures
+# conftest.py — Test Fixtures with Database Isolation
 # ======================================================
-# SYSTEM DESIGN CONCEPT: Test Infrastructure
+# SYSTEM DESIGN CONCEPT: Test Database Isolation
 # -------------------------------------------------
-# conftest.py is pytest's way of sharing setup/teardown
-# logic across ALL test files. Think of it as the
-# "test environment factory."
-#
-# KEY IDEAS:
-# 1. FIXTURES — Reusable setup (like a test database, a
-#    client, a logged-in user). Defined once, used everywhere.
-# 2. ISOLATION — Each test gets a FRESH state so tests
-#    don't interfere with each other. This is critical
-#    because flaky tests destroy developer trust.
-# 3. SCOPE — Fixtures can be per-test, per-module, or
-#    per-session depending on how expensive they are.
-#
-# WHY IS TEST INFRASTRUCTURE IMPORTANT IN SYSTEM DESIGN?
-# In production systems, automated tests are your SAFETY
-# NET. Without them, every deploy is a gamble. Companies
-# like Google run MILLIONS of tests before every release.
+# For tests, we use an in-memory SQLite database via
+# aiosqlite or a separate test DB session.
+# FastAPI's `app.dependency_overrides` allows us to
+# intercept calls to `get_db` and provide a clean,
+# isolated test session per test!
 # ======================================================
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.pool import StaticPool
 
+from app.db.database import get_db
+from app.db.models import Base
 from app.main import app
-from app.routes.url import url_store
+
+# In-memory async SQLite engine specifically for testing
+TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+
+test_engine = create_async_engine(
+    TEST_DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
+
+TestingSessionLocal = async_sessionmaker(
+    bind=test_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
+
+
+@pytest.fixture(autouse=True)
+def init_test_db():
+    """
+    Ensure tables are created in the test engine synchronously/cleanly before tests.
+    """
+    import asyncio
+
+    async def _init_tables():
+        async with test_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_tables())
+    yield
 
 
 @pytest.fixture()
 def client():
     """
-    Create a fresh test client for each test.
-
-    SYSTEM DESIGN CONCEPT: Test Client
-    -----------------------------------
-    FastAPI's TestClient lets you send HTTP requests to
-    your app WITHOUT starting a real server. This means:
-
-    1. Tests run in MILLISECONDS (no network overhead)
-    2. Tests are DETERMINISTIC (no port conflicts)
-    3. Tests are ISOLATED (no shared server state)
-
-    Under the hood, it uses Starlette's TestClient which
-    uses `httpx` — the same HTTP library used in production.
-    So you're testing the REAL request/response pipeline.
+    Create a test client with overridden DB dependency for isolation.
     """
-    # Clear the in-memory store before each test
-    # This ensures TEST ISOLATION — each test starts clean
-    url_store.clear()
+    async def override_get_db():
+        async with TestingSessionLocal() as session:
+            try:
+                yield session
+            finally:
+                await session.close()
+
+    app.dependency_overrides[get_db] = override_get_db
 
     with TestClient(app) as c:
         yield c
 
-    # Cleanup after each test
-    url_store.clear()
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture()
 def sample_url(client):
-    """
-    Fixture that creates a sample short URL and returns
-    the response data.
-
-    DESIGN PATTERN: Test Fixture / Test Data Factory
-    ------------------------------------------------
-    Many tests need a URL to already exist (for GET,
-    DELETE, redirect, etc.). Instead of repeating the
-    creation code in every test, we create it ONCE here.
-
-    This is the DRY principle applied to tests.
-    """
+    """Fixture that creates a sample short URL."""
     response = client.post(
         "/api/v1/shorten",
         json={"original_url": "https://www.example.com/long/path"},
