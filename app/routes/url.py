@@ -1,19 +1,21 @@
 # ======================================================
-# routes/url.py — URL Shortener API Endpoints (with Rate Limiting & SSRF Defense)
+# routes/url.py — URL Shortener API Endpoints (with Event-Driven Redirects)
 # ======================================================
-# SYSTEM DESIGN CONCEPT: Secure & Rate-Limited REST Endpoints
+# SYSTEM DESIGN CONCEPT: Non-Blocking Hot Path
 # -------------------------------------------------
-# 1. Rate Limiting: Protected via `enforce_rate_limit` dependency
-# 2. SSRF Protection: Input URLs validated with `validate_and_sanitize_url`
-# 3. Clean Architecture: Service & Repository separation
+# The redirect endpoint is the most critical "hot path" in the system.
+# We publish a ClickEvent to the in-memory Event Bus asynchronously
+# and return the 307 redirect immediately, with zero DB write latency!
 # ======================================================
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 
 from app.core.config import get_settings
 from app.core.security import validate_and_sanitize_url
 from app.dependencies import enforce_rate_limit, get_url_service
+from app.events.event_bus import ClickEvent, get_event_bus
 from app.middleware.auth import AuthenticatedUser
 from app.schemas.url import (
     ErrorResponse,
@@ -75,10 +77,8 @@ async def create_short_url(
     user: AuthenticatedUser = Depends(enforce_rate_limit),
     service: URLService = Depends(get_url_service),
 ):
-    """Create a new shortened URL with SSRF validation and rate limit tracking."""
     settings = get_settings()
 
-    # SYSTEM DESIGN CONCEPT: SSRF & URL Sanitization
     try:
         sanitized_url = validate_and_sanitize_url(str(request.original_url))
     except ValueError as e:
@@ -122,7 +122,6 @@ async def get_url_details(
     user: AuthenticatedUser = Depends(enforce_rate_limit),
     service: URLService = Depends(get_url_service),
 ):
-    """Retrieve details and statistics for a given short code."""
     settings = get_settings()
     try:
         url = await service.get_url(short_code)
@@ -158,7 +157,6 @@ async def delete_url(
     short_code: str,
     service: URLService = Depends(get_url_service),
 ):
-    """Delete a shortened URL record."""
     try:
         await service.delete_url(short_code)
         return MessageResponse(message=f"URL '{short_code}' deleted successfully")
@@ -187,7 +185,6 @@ async def list_urls(
     user: AuthenticatedUser = Depends(enforce_rate_limit),
     service: URLService = Depends(get_url_service),
 ):
-    """List URLs with offset-based pagination."""
     settings = get_settings()
     urls = await service.list_urls(skip=skip, limit=limit)
     return [_to_url_response(url, settings.base_url) for url in urls]
@@ -201,8 +198,8 @@ redirect_router = APIRouter(tags=["Redirect"])
 
 @redirect_router.get(
     "/{short_code}",
-    summary="Redirect to original URL",
-    description="Redirects to the original URL associated with the short code and tracks click count.",
+    summary="Redirect to original URL (Event-Driven Click Tracking)",
+    description="Redirects to destination URL and publishes a click event asynchronously.",
     responses={
         307: {"description": "Temporary redirect to the original URL"},
         404: {"model": ErrorResponse, "description": "URL not found or expired"},
@@ -210,11 +207,27 @@ redirect_router = APIRouter(tags=["Redirect"])
 )
 async def redirect_to_url(
     short_code: str,
+    request: Request,
     service: URLService = Depends(get_url_service),
 ):
-    """Execute redirection and click tracking."""
+    """
+    Execute instant redirect and asynchronously publish telemetry event.
+    """
     try:
         original_url = await service.redirect_url(short_code)
+
+        # SYSTEM DESIGN CONCEPT: Asynchronous Telemetry Publishing
+        # Non-blocking publish to event bus -> handled by background worker
+        event = ClickEvent(
+            short_code=short_code,
+            timestamp=datetime.now(timezone.utc),
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+            referrer=request.headers.get("referer"),
+        )
+        event_bus = get_event_bus()
+        await event_bus.publish(event)
+
         return RedirectResponse(
             url=original_url,
             status_code=status.HTTP_307_TEMPORARY_REDIRECT,
