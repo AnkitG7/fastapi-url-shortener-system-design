@@ -1,22 +1,20 @@
 # ======================================================
-# routes/url.py — URL Shortener API Endpoints (DB-backed)
+# routes/url.py — URL Shortener API Endpoints (with Rate Limiting & SSRF Defense)
 # ======================================================
-# SYSTEM DESIGN CONCEPT: Clean Architecture Route Handlers
+# SYSTEM DESIGN CONCEPT: Secure & Rate-Limited REST Endpoints
 # -------------------------------------------------
-# With the Service and Repository layers in place:
-# 1. Routes are THIN — they only handle HTTP concerns:
-#    - Receiving and validating JSON payloads
-#    - Catching Domain Exceptions & translating to HTTP Status Codes
-#    - Returning standardized Pydantic responses
-# 2. All business logic lives in URLService.
-# 3. All SQL/persistence lives in URLRepository.
+# 1. Rate Limiting: Protected via `enforce_rate_limit` dependency
+# 2. SSRF Protection: Input URLs validated with `validate_and_sanitize_url`
+# 3. Clean Architecture: Service & Repository separation
 # ======================================================
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 
 from app.core.config import get_settings
-from app.dependencies import get_url_service
+from app.core.security import validate_and_sanitize_url
+from app.dependencies import enforce_rate_limit, get_url_service
+from app.middleware.auth import AuthenticatedUser
 from app.schemas.url import (
     ErrorResponse,
     MessageResponse,
@@ -38,7 +36,6 @@ router = APIRouter(
 
 
 def _to_url_response(url_model, base_url: str) -> URLResponse:
-    """Helper to convert ORM model to Pydantic URLResponse schema."""
     return URLResponse(
         short_code=url_model.short_code,
         original_url=url_model.original_url,
@@ -50,7 +47,6 @@ def _to_url_response(url_model, base_url: str) -> URLResponse:
 
 
 def _to_url_stats_response(url_model, base_url: str) -> URLStatsResponse:
-    """Helper to convert ORM model to Pydantic URLStatsResponse schema."""
     return URLStatsResponse(
         short_code=url_model.short_code,
         original_url=url_model.original_url,
@@ -66,21 +62,37 @@ def _to_url_stats_response(url_model, base_url: str) -> URLStatsResponse:
     "/shorten",
     response_model=URLResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Create a shortened URL",
-    description="Takes a long URL and returns a shortened version persisted in the database.",
+    summary="Create a shortened URL (Rate-limited & SSRF-protected)",
+    description="Takes a long URL and returns a shortened version. Enforces SSRF checks and tier-based rate limits.",
     responses={
+        400: {"model": ErrorResponse, "description": "Invalid URL or SSRF attempt detected"},
         409: {"model": ErrorResponse, "description": "Custom code already taken"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
     },
 )
 async def create_short_url(
     request: URLCreateRequest,
+    user: AuthenticatedUser = Depends(enforce_rate_limit),
     service: URLService = Depends(get_url_service),
 ):
-    """Create a new shortened URL using the business service layer."""
+    """Create a new shortened URL with SSRF validation and rate limit tracking."""
     settings = get_settings()
+
+    # SYSTEM DESIGN CONCEPT: SSRF & URL Sanitization
+    try:
+        sanitized_url = validate_and_sanitize_url(str(request.original_url))
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "detail": str(e),
+                "error_code": "INVALID_OR_BLOCKED_URL",
+            },
+        )
+
     try:
         url = await service.create_short_url(
-            original_url=str(request.original_url),
+            original_url=sanitized_url,
             custom_code=request.custom_code,
             expires_in_hours=request.expires_in_hours,
         )
@@ -99,13 +111,15 @@ async def create_short_url(
     "/urls/{short_code}",
     response_model=URLStatsResponse,
     summary="Get URL details and stats",
-    description="Retrieve details about a shortened URL including click statistics from DB.",
+    description="Retrieve details about a shortened URL including click statistics.",
     responses={
         404: {"model": ErrorResponse, "description": "URL not found or expired"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
     },
 )
 async def get_url_details(
     short_code: str,
+    user: AuthenticatedUser = Depends(enforce_rate_limit),
     service: URLService = Depends(get_url_service),
 ):
     """Retrieve details and statistics for a given short code."""
@@ -135,7 +149,7 @@ async def get_url_details(
     "/urls/{short_code}",
     response_model=MessageResponse,
     summary="Delete a shortened URL",
-    description="Permanently delete a shortened URL from the database.",
+    description="Permanently delete a shortened URL from the database and cache.",
     responses={
         404: {"model": ErrorResponse, "description": "URL not found"},
     },
@@ -163,10 +177,14 @@ async def delete_url(
     response_model=list[URLResponse],
     summary="List all shortened URLs",
     description="Retrieve all shortened URLs with pagination.",
+    responses={
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
+    },
 )
 async def list_urls(
     skip: int = 0,
     limit: int = 10,
+    user: AuthenticatedUser = Depends(enforce_rate_limit),
     service: URLService = Depends(get_url_service),
 ):
     """List URLs with offset-based pagination."""
@@ -184,7 +202,7 @@ redirect_router = APIRouter(tags=["Redirect"])
 @redirect_router.get(
     "/{short_code}",
     summary="Redirect to original URL",
-    description="Redirects to the original URL associated with the short code and increments click count.",
+    description="Redirects to the original URL associated with the short code and tracks click count.",
     responses={
         307: {"description": "Temporary redirect to the original URL"},
         404: {"model": ErrorResponse, "description": "URL not found or expired"},
@@ -194,7 +212,7 @@ async def redirect_to_url(
     short_code: str,
     service: URLService = Depends(get_url_service),
 ):
-    """Execute redirection and atomic click counter increment in DB."""
+    """Execute redirection and click tracking."""
     try:
         original_url = await service.redirect_url(short_code)
         return RedirectResponse(

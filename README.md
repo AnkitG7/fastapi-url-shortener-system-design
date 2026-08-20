@@ -13,8 +13,8 @@ This project teaches **20+ system design concepts** across 7 phases:
 | **1. API Design** | REST, Data Contracts, Pagination, HTTP Status Codes | ✅ Done |
 | **2. Database Layer** | Schema Design, ORM, Repository Pattern, Migrations, Connection Pooling | ✅ Done |
 | **3. Caching & Performance** | Redis, Cache-Aside Pattern, TTL, Cache Invalidation, Graceful Degradation | ✅ Done |
-| 4. Auth & Rate Limiting | API Keys, Token Bucket, Sliding Window, Middleware | Up Next |
-| 5. Async Processing | Background Workers, Event-Driven Architecture | Planned |
+| **4. Auth, Rate Limiting & Security** | Sliding Window Log (Redis ZSET), Tiered API Keys, SSRF Prevention, HTTP 429 | ✅ Done |
+| 5. Async Processing | Background Workers, Event-Driven Architecture | Up Next |
 | 6. Observability | Structured Logging, Health Checks, Circuit Breakers | Planned |
 | 7. Scaling | Docker, Load Balancing, Horizontal Scaling | Planned |
 
@@ -51,7 +51,7 @@ uvicorn app.main:app --reload --port 8000
 pytest tests/ -v
 ```
 
-**56 tests** covering all endpoints, caching behaviors, database repository layer, service business logic, validation, redirects, and edge cases.
+**67 tests** covering all endpoints, sliding window rate limits, SSRF security defenses, caching behaviors, database repository layer, service business logic, validation, and redirects.
 
 ## 📁 Project Structure
 
@@ -61,15 +61,19 @@ pytest tests/ -v
 │   └── env.py               # Migration environment configuration
 ├── app/
 │   ├── main.py              # FastAPI entry point, middleware, multi-resource lifecycle
-│   ├── dependencies.py      # Dependency injection providers (DB, Cache, Repo, Service)
+│   ├── dependencies.py      # Dependency injection (Auth, Rate Limiter, DB, Cache, Service)
 │   ├── core/
-│   │   └── config.py        # Type-safe configuration (Pydantic Settings)
+│   │   ├── config.py        # Type-safe configuration (Pydantic Settings)
+│   │   └── security.py      # SSRF defense, private IP filtering, UserTier enum
 │   ├── db/
 │   │   ├── database.py      # Async engine, connection pooling, session factory
 │   │   └── models.py        # SQLAlchemy ORM models (indexes, constraints)
 │   ├── cache/
 │   │   ├── redis_client.py  # Async Redis client, connection pooling, health checks
 │   │   └── url_cache.py     # Cache-Aside pattern, TTL, namespacing, graceful degradation
+│   ├── middleware/
+│   │   ├── auth.py          # API key authentication & tier resolution
+│   │   └── rate_limiter.py  # Redis Sliding Window Log rate limiter via Sorted Sets
 │   ├── repositories/
 │   │   └── url_repository.py# Data Access Layer (Atomic updates, CRUD)
 │   ├── services/
@@ -77,10 +81,12 @@ pytest tests/ -v
 │   ├── schemas/
 │   │   └── url.py           # Request/Response data contracts
 │   └── routes/
-│       └── url.py           # Clean Architecture route handlers
+│       └── url.py           # Rate-limited and SSRF-protected route handlers
 ├── tests/
-│   ├── conftest.py          # Isolated test DB & fake Redis fixtures
+│   ├── conftest.py          # Isolated test DB, fake Redis, and rate limiter fixtures
 │   ├── test_cache.py        # Cache-Aside, TTL, and invalidation tests
+│   ├── test_rate_limiter.py # Sliding window rate limiting & RFC headers tests
+│   ├── test_security.py     # SSRF defense, private subnet, and loopback tests
 │   ├── test_create_url.py   # POST /api/v1/shorten tests
 │   ├── test_read_url.py     # GET endpoints tests
 │   ├── test_delete_url.py   # DELETE endpoint tests
@@ -93,11 +99,10 @@ pytest tests/ -v
 └── .env                     # Environment config (gitignored)
 ```
 
-## 📖 System Design Concepts in Phase 3
+## 📖 System Design Concepts in Phase 4
 
-- **Cache-Aside (Lazy Loading)** — Reading from in-memory cache first; querying DB on cache miss and populating cache.
-- **Write-Through / Pre-Warming** — Populating cache immediately upon resource creation.
-- **Cache Invalidation** — Deleting cached keys when underlying DB records are deleted or expired.
-- **TTL (Time to Live)** — Enforcing expiration on cached keys to prevent stale data and Redis memory overflow.
-- **Graceful Degradation** — If Redis fails or goes offline, the application seamlessly falls back to PostgreSQL without crashing.
-- **Key Namespacing** — Using hierarchical prefixes like `url:{short_code}` to prevent collisions in shared cache instances.
+- **Sliding Window Log Algorithm** — Implemented using Redis Sorted Sets (`ZSET`) with `ZREMRANGEBYSCORE`, `ZCARD`, and `ZADD` to eliminate the "boundary burst" flaw of Fixed Window counters.
+- **Tiered Quality of Service (QoS)** — Differentiating limits for `Anonymous` (10 req/min), `Free` (100 req/min), and `Premium` (1000 req/min) user tiers.
+- **Standard RFC Rate Limiting Headers** — Providing clients with `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, and `Retry-After` on HTTP `429 Too Many Requests`.
+- **SSRF (Server-Side Request Forgery) Defense** — Blocking requests to internal loopback (`127.0.0.1`, `localhost`), private RFC 1918 subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), and Cloud Metadata endpoints (`169.254.169.254`).
+- **Fail-Open Strategy** — If Redis rate limiter is temporarily unavailable, the system defaults to allowing traffic rather than creating an outage for legitimate users.

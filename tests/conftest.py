@@ -1,16 +1,11 @@
 # ======================================================
-# conftest.py — Test Fixtures with DB & Cache Isolation
+# conftest.py — Test Fixtures with DB, Cache, & Rate Limit Isolation
 # ======================================================
 # SYSTEM DESIGN CONCEPT: Multi-Resource Test Isolation
 # -------------------------------------------------
-# For fast and deterministic testing:
 # 1. Database: In-memory async SQLite
 # 2. Cache: In-memory fake Redis via fakeredis
-#
-# This guarantees:
-# - Zero external dependencies required during test runs
-# - 100% test isolation (no state leaked between test cases)
-# - Sub-second test execution for the entire suite
+# 3. Rate Limiter: In-memory fake Redis sliding window
 # ======================================================
 
 import asyncio
@@ -27,8 +22,9 @@ from sqlalchemy.pool import StaticPool
 from app.cache.url_cache import URLCache
 from app.db.database import get_db
 from app.db.models import Base
-from app.dependencies import get_url_cache
+from app.dependencies import get_rate_limiter, get_url_cache
 from app.main import app
+from app.middleware.rate_limiter import SlidingWindowRateLimiter
 
 # In-memory async SQLite engine for testing
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -71,9 +67,15 @@ def test_cache(fake_redis):
 
 
 @pytest.fixture()
-def client(test_cache):
+def test_limiter(fake_redis):
+    """Provide a SlidingWindowRateLimiter backed by fake Redis."""
+    return SlidingWindowRateLimiter(redis_client=fake_redis)
+
+
+@pytest.fixture()
+def client(test_cache, test_limiter):
     """
-    Create a test client with overridden DB and Cache dependencies.
+    Create a test client with overridden DB, Cache, and RateLimiter dependencies.
     """
     async def override_get_db():
         async with TestingSessionLocal() as session:
@@ -85,8 +87,12 @@ def client(test_cache):
     async def override_get_cache():
         return test_cache
 
+    async def override_get_rate_limiter():
+        return test_limiter
+
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_url_cache] = override_get_cache
+    app.dependency_overrides[get_rate_limiter] = override_get_rate_limiter
 
     with TestClient(app) as c:
         yield c
