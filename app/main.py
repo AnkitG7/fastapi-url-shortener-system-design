@@ -1,17 +1,18 @@
 # ======================================================
 # main.py — FastAPI Application Entry Point
 # ======================================================
-# SYSTEM DESIGN CONCEPT: Application Lifecycle & DB Init
+# SYSTEM DESIGN CONCEPT: Multi-Resource Lifecycle Management
 # -------------------------------------------------
-# On startup, we ensure database tables are initialized and
-# connection pools are ready. On shutdown, we dispose of
-# the engine and active connections gracefully.
+# We manage the lifecycle for both PostgreSQL and Redis:
+# - Startup: Check DB & Redis connectivity, bootstrap tables
+# - Shutdown: Close DB connection pool and Redis connection pool
 # ======================================================
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.cache.redis_client import check_redis_health, close_redis_pool
 from app.core.config import get_settings
 from app.db.database import engine
 from app.db.models import Base
@@ -22,29 +23,35 @@ from app.routes.url import router as url_router, redirect_router
 async def lifespan(app: FastAPI):
     """
     Application lifespan manager.
-    Initializes DB tables on startup and cleans up on shutdown.
+    Initializes PostgreSQL and Redis connections on startup, cleans up on shutdown.
     """
     settings = get_settings()
     print(f"[START] Starting {settings.app_name} v{settings.app_version}")
     print(f"[DOCS]  API docs available at {settings.base_url}/docs")
     print(f"[DEBUG] Debug mode: {settings.debug}")
 
-    # SYSTEM DESIGN CONCEPT: Schema Bootstrap
-    # In development/prototype mode, create tables if they don't exist.
-    # In production, this is managed via Alembic migrations.
+    # 1. Initialize PostgreSQL
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        print("[DB]    Database tables verified / initialized successfully")
+        print("[DB]    PostgreSQL tables verified / initialized successfully")
     except Exception as e:
-        print(f"[DB]    Warning: Could not connect to database on startup: {e}")
+        print(f"[DB]    Warning: Could not connect to PostgreSQL on startup: {e}")
 
-    yield  # App is running and serving requests
+    # 2. Check Redis Health
+    redis_healthy = await check_redis_health()
+    if redis_healthy:
+        print("[REDIS] Connected to Redis successfully (Cache-Aside ready)")
+    else:
+        print("[REDIS] Warning: Redis is not reachable. Falling back to DB-only mode.")
 
-    # Shutdown: gracefully close connection pool
+    yield  # App is serving traffic
+
+    # Shutdown: gracefully close DB and Redis connection pools
     print(f"[STOP]  Shutting down {settings.app_name}...")
     await engine.dispose()
-    print("[DB]    Database connection pool closed.")
+    print("[DB]    PostgreSQL connection pool closed.")
+    await close_redis_pool()
 
 
 settings = get_settings()
@@ -54,15 +61,14 @@ app = FastAPI(
     description="""
 ## 🔗 URL Shortener Service
 
-A production-grade URL shortening service built with FastAPI,
-demonstrating real-world system design patterns.
+A production-grade URL shortening service built with FastAPI, PostgreSQL, and Redis.
 
 ### Features
-- **Shorten URLs** — Create short, memorable links backed by PostgreSQL
-- **Custom codes** — Choose your own short code
-- **Expiration** — Set links to auto-expire
-- **Click tracking** — Atomic click counting in the database
-- **Redirect** — Short URLs redirect to the original destination
+- **Shorten URLs** — High-performance link creation
+- **Redis Cache-Aside** — Sub-millisecond URL lookups and redirects
+- **Durable Storage** — PostgreSQL persistence with connection pooling
+- **Atomic Click Tracking** — Concurrency-safe analytics
+- **Alembic Migrations** — Database schema version control
     """,
     version=settings.app_version,
     lifespan=lifespan,

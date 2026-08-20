@@ -12,8 +12,8 @@ This project teaches **20+ system design concepts** across 7 phases:
 |-------|----------|:------:|
 | **1. API Design** | REST, Data Contracts, Pagination, HTTP Status Codes | ✅ Done |
 | **2. Database Layer** | Schema Design, ORM, Repository Pattern, Migrations, Connection Pooling | ✅ Done |
-| 3. Caching | Redis, Cache-Aside, TTL, Cache Invalidation | Up Next |
-| 4. Auth & Rate Limiting | API Keys, Token Bucket, Middleware | Planned |
+| **3. Caching & Performance** | Redis, Cache-Aside Pattern, TTL, Cache Invalidation, Graceful Degradation | ✅ Done |
+| 4. Auth & Rate Limiting | API Keys, Token Bucket, Sliding Window, Middleware | Up Next |
 | 5. Async Processing | Background Workers, Event-Driven Architecture | Planned |
 | 6. Observability | Structured Logging, Health Checks, Circuit Breakers | Planned |
 | 7. Scaling | Docker, Load Balancing, Horizontal Scaling | Planned |
@@ -25,8 +25,8 @@ This project teaches **20+ system design concepts** across 7 phases:
 git clone https://github.com/AnkitG7/fastapi-url-shortener-system-design.git
 cd fastapi-url-shortener-system-design
 
-# Start Database via Docker
-docker compose up -d postgres
+# Start PostgreSQL and Redis via Docker
+docker compose up -d
 
 # Setup Virtual Environment
 python -m venv venv
@@ -51,7 +51,7 @@ uvicorn app.main:app --reload --port 8000
 pytest tests/ -v
 ```
 
-**51 tests** covering all endpoints, database repository layer, service business logic, validation, redirects, and edge cases.
+**56 tests** covering all endpoints, caching behaviors, database repository layer, service business logic, validation, redirects, and edge cases.
 
 ## 📁 Project Structure
 
@@ -60,23 +60,27 @@ pytest tests/ -v
 │   ├── versions/            # Migration scripts
 │   └── env.py               # Migration environment configuration
 ├── app/
-│   ├── main.py              # FastAPI entry point, middleware, lifecycle
-│   ├── dependencies.py      # Dependency injection providers
+│   ├── main.py              # FastAPI entry point, middleware, multi-resource lifecycle
+│   ├── dependencies.py      # Dependency injection providers (DB, Cache, Repo, Service)
 │   ├── core/
 │   │   └── config.py        # Type-safe configuration (Pydantic Settings)
 │   ├── db/
 │   │   ├── database.py      # Async engine, connection pooling, session factory
 │   │   └── models.py        # SQLAlchemy ORM models (indexes, constraints)
+│   ├── cache/
+│   │   ├── redis_client.py  # Async Redis client, connection pooling, health checks
+│   │   └── url_cache.py     # Cache-Aside pattern, TTL, namespacing, graceful degradation
 │   ├── repositories/
 │   │   └── url_repository.py# Data Access Layer (Atomic updates, CRUD)
 │   ├── services/
-│   │   └── url_service.py   # Business Logic Layer (Domain rules & exceptions)
+│   │   └── url_service.py   # Business Logic Layer (Cache-Aside + DB Orchestration)
 │   ├── schemas/
 │   │   └── url.py           # Request/Response data contracts
 │   └── routes/
 │       └── url.py           # Clean Architecture route handlers
 ├── tests/
-│   ├── conftest.py          # Isolated test DB fixtures & overrides
+│   ├── conftest.py          # Isolated test DB & fake Redis fixtures
+│   ├── test_cache.py        # Cache-Aside, TTL, and invalidation tests
 │   ├── test_create_url.py   # POST /api/v1/shorten tests
 │   ├── test_read_url.py     # GET endpoints tests
 │   ├── test_delete_url.py   # DELETE endpoint tests
@@ -84,19 +88,16 @@ pytest tests/ -v
 │   ├── test_validation.py   # Input validation & boundary tests
 │   ├── test_url_repository.py # Repository unit tests
 │   └── test_url_service.py    # Service domain rules tests
-├── docker-compose.yml       # Infrastructure as Code (PostgreSQL)
+├── docker-compose.yml       # Infrastructure as Code (PostgreSQL + Redis)
 ├── requirements.txt
 └── .env                     # Environment config (gitignored)
 ```
 
-## 📖 System Design Concepts in Phase 2
+## 📖 System Design Concepts in Phase 3
 
-- **Relational Schema Design** — Normalization, server-side timestamps (`func.now()`), constraints.
-- **Database Indexing** — B-tree index on `short_code` ($O(\log n)$ vs $O(n)$ full table scans) and `created_at`.
-- **Connection Pooling** — Reusing persistent connections to avoid expensive TCP/auth handshakes per query.
-- **Async I/O** — Non-blocking database calls enabling high concurrency.
-- **Repository Pattern** — Decoupling SQL queries and persistence from business rules.
-- **Clean Architecture & Service Layer** — Transport-agnostic domain logic with custom Domain Exceptions.
-- **Atomic Database Updates** — Avoiding concurrency race conditions during click counts via `click_count = click_count + 1`.
-- **Database Migrations (Alembic)** — Schema version control and automated migration history.
-- **Test Database Isolation** — Dependency overriding with in-memory async SQLite for fast and deterministic test runs.
+- **Cache-Aside (Lazy Loading)** — Reading from in-memory cache first; querying DB on cache miss and populating cache.
+- **Write-Through / Pre-Warming** — Populating cache immediately upon resource creation.
+- **Cache Invalidation** — Deleting cached keys when underlying DB records are deleted or expired.
+- **TTL (Time to Live)** — Enforcing expiration on cached keys to prevent stale data and Redis memory overflow.
+- **Graceful Degradation** — If Redis fails or goes offline, the application seamlessly falls back to PostgreSQL without crashing.
+- **Key Namespacing** — Using hierarchical prefixes like `url:{short_code}` to prevent collisions in shared cache instances.

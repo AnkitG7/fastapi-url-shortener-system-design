@@ -1,15 +1,20 @@
 # ======================================================
-# conftest.py — Test Fixtures with Database Isolation
+# conftest.py — Test Fixtures with DB & Cache Isolation
 # ======================================================
-# SYSTEM DESIGN CONCEPT: Test Database Isolation
+# SYSTEM DESIGN CONCEPT: Multi-Resource Test Isolation
 # -------------------------------------------------
-# For tests, we use an in-memory SQLite database via
-# aiosqlite or a separate test DB session.
-# FastAPI's `app.dependency_overrides` allows us to
-# intercept calls to `get_db` and provide a clean,
-# isolated test session per test!
+# For fast and deterministic testing:
+# 1. Database: In-memory async SQLite
+# 2. Cache: In-memory fake Redis via fakeredis
+#
+# This guarantees:
+# - Zero external dependencies required during test runs
+# - 100% test isolation (no state leaked between test cases)
+# - Sub-second test execution for the entire suite
 # ======================================================
 
+import asyncio
+import fakeredis.aioredis
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import (
@@ -19,11 +24,13 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from app.cache.url_cache import URLCache
 from app.db.database import get_db
 from app.db.models import Base
+from app.dependencies import get_url_cache
 from app.main import app
 
-# In-memory async SQLite engine specifically for testing
+# In-memory async SQLite engine for testing
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 test_engine = create_async_engine(
@@ -41,11 +48,7 @@ TestingSessionLocal = async_sessionmaker(
 
 @pytest.fixture(autouse=True)
 def init_test_db():
-    """
-    Ensure tables are created in the test engine synchronously/cleanly before tests.
-    """
-    import asyncio
-
+    """Ensure clean tables before each test."""
     async def _init_tables():
         async with test_engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
@@ -56,9 +59,21 @@ def init_test_db():
 
 
 @pytest.fixture()
-def client():
+def fake_redis():
+    """Provide a fresh fake async Redis client for testing."""
+    return fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+
+@pytest.fixture()
+def test_cache(fake_redis):
+    """Provide a URLCache instance backed by fake Redis."""
+    return URLCache(redis_client=fake_redis)
+
+
+@pytest.fixture()
+def client(test_cache):
     """
-    Create a test client with overridden DB dependency for isolation.
+    Create a test client with overridden DB and Cache dependencies.
     """
     async def override_get_db():
         async with TestingSessionLocal() as session:
@@ -67,7 +82,11 @@ def client():
             finally:
                 await session.close()
 
+    async def override_get_cache():
+        return test_cache
+
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_url_cache] = override_get_cache
 
     with TestClient(app) as c:
         yield c
