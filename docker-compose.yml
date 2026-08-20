@@ -1,15 +1,77 @@
 # ======================================================
-# docker-compose.yml — Local Infrastructure Services
+# docker-compose.yml — Full-Stack Scaled Architecture
 # ======================================================
-# SYSTEM DESIGN CONCEPT: Multi-Service Orchestration
+# SYSTEM DESIGN CONCEPT: Horizontal Scaling & High Availability
 # -------------------------------------------------
-# We define both PostgreSQL (Relational DB) and Redis
-# (In-Memory Cache) as isolated containerized services.
+# Architecture:
+#
+#                    [ Client Traffic ]
+#                            |
+#                            v
+#                   [ Nginx Load Balancer ]
+#                     (Port 80 -> Round Robin)
+#                   /        |        \
+#                  v         v         v
+#             [App Replica 1] [App Replica 2] [App Replica 3]
+#                  \         |         /
+#                   +--------+--------+
+#                   |                 |
+#                   v                 v
+#             [ PostgreSQL ]      [ Redis ]
+#             (Durable DB)       (Cache & Rate Limit)
 # ======================================================
 
 services:
   # =====================================================
-  # PostgreSQL — Primary Relational Database (Source of Truth)
+  # Nginx — Reverse Proxy & Load Balancer (Public Gateway)
+  # =====================================================
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: url_shortener_gateway
+    ports:
+      - "80:80"                  # Gateway exposed on port 80
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - app_network
+
+  # =====================================================
+  # FastAPI Application — Stateless Scalable Cluster
+  # =====================================================
+  # SYSTEM DESIGN CONCEPT: Stateless Microservices
+  # Scale to N replicas anytime with: `docker compose up --scale app=3 -d`
+  # =====================================================
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - APP_NAME=url-shortener
+      - DEBUG=false
+      - BASE_URL=http://localhost
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/url_shortener
+      - REDIS_URL=redis://redis:6379/0
+      - RATE_LIMIT_ANONYMOUS=10
+      - RATE_LIMIT_FREE=100
+      - RATE_LIMIT_PREMIUM=1000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - app_network
+
+  # =====================================================
+  # PostgreSQL — Primary Relational Database
   # =====================================================
   postgres:
     image: postgres:16-alpine
@@ -27,19 +89,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - app_network
 
   # =====================================================
-  # Redis — In-Memory Key-Value Cache & Fast Storage
-  # =====================================================
-  # SYSTEM DESIGN CONCEPT: In-Memory Caching
-  # -------------------------------------------------
-  # Disk I/O (PostgreSQL) is measured in MILLISECONDS (~1-10ms).
-  # RAM I/O (Redis) is measured in MICROSECONDS (~100-500µs).
-  #
-  # By caching popular URLs in Redis:
-  # 1. 10x-50x FASTER response times for redirects
-  # 2. Reduces load on PostgreSQL by 80-95% (Pareto 80/20 rule)
-  # 3. Protects the database from traffic spikes (Thundering Herd)
+  # Redis — In-Memory Cache & Sliding Window Rate Limiter
   # =====================================================
   redis:
     image: redis:7-alpine
@@ -48,12 +102,18 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes  # Enable AOF persistence for crash recovery
+    command: redis-server --appendonly yes
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - app_network
+
+networks:
+  app_network:
+    driver: bridge
 
 volumes:
   postgres_data:

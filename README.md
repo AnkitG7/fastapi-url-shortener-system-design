@@ -1,57 +1,80 @@
-# 🔗 FastAPI URL Shortener — System Design Learning Project
+# 🔗 FastAPI URL Shortener — Production System Design Project
 
-A **production-grade URL shortener** built with FastAPI, designed to teach **system design concepts** through hands-on code.
+A **production-grade URL Shortener Service** built with FastAPI, PostgreSQL, Redis, and Nginx, designed to teach **20+ core system design concepts** through hands-on code.
 
-Every file is heavily commented with explanations of **WHY** things are done a certain way — not just how.
+Every file is heavily commented with explanations of **WHY** design decisions were made.
 
-## 🎯 What You'll Learn
+---
 
-This project teaches **20+ system design concepts** across 7 phases:
+## 🎯 System Design Concepts Covered (7 Phases)
 
-| Phase | Concepts | Status |
-|-------|----------|:------:|
-| **1. API Design** | REST, Data Contracts, Pagination, HTTP Status Codes | ✅ Done |
-| **2. Database Layer** | Schema Design, ORM, Repository Pattern, Migrations, Connection Pooling | ✅ Done |
-| **3. Caching & Performance** | Redis, Cache-Aside Pattern, TTL, Cache Invalidation, Graceful Degradation | ✅ Done |
-| **4. Auth, Rate Limiting & Security** | Sliding Window Log (Redis ZSET), Tiered API Keys, SSRF Prevention, HTTP 429 | ✅ Done |
-| **5. Async Processing & Analytics** | Producer-Consumer Pattern, Event Bus, Background Batch Worker, CQRS Aggregations | ✅ Done |
-| **6. Observability & Reliability** | Structured JSON Logging, Distributed Tracing (`X-Correlation-ID`), Health Probes, Circuit Breaker | ✅ Done |
-| 7. Scaling & Deployment | Dockerfile, Multi-Replica Clustering, Nginx Load Balancer | Up Next |
+| Phase | Core Concepts | Status |
+|-------|---------------|:------:|
+| **1. API Design** | REST principles, Pydantic Data Contracts, Pagination, 301 vs 307 Redirects, HTTP Status Codes | ✅ Complete |
+| **2. Database Layer** | Relational Schema Design, B-Tree Indexing, Connection Pooling, Repository Pattern, Alembic Migrations | ✅ Complete |
+| **3. Caching & Performance** | Redis Cache-Aside (Lazy Load), Pre-Warming, TTL Expiration, Cache Invalidation, Graceful Degradation | ✅ Complete |
+| **4. Auth, Rate Limiting & Security** | Sliding Window Log (Redis ZSET), Tiered API Keys, RFC Headers (`Retry-After`), SSRF Defense | ✅ Complete |
+| **5. Async Processing & Analytics** | Producer-Consumer Pattern, EventBus, Background Batch Worker, Bulk Inserts, CQRS Aggregations | ✅ Complete |
+| **6. Observability & Reliability** | Structured JSON Logging, Distributed Tracing (`X-Correlation-ID`), `/health/ready` Probes, Circuit Breaker | ✅ Complete |
+| **7. Scaling & Deployment** | Multi-Stage Dockerfile, Horizontal Scaling, Nginx Round-Robin Load Balancing, Capacity Estimations | ✅ Complete |
 
-## 🚀 Quick Start
+---
+
+## 🏛️ System Architecture
+
+```
+                    [ Client / Browser ]
+                             |
+                             v
+                  [ Nginx Load Balancer ]
+                   (Port 80 -> Round Robin)
+                 /           |           \
+                v            v            v
+          [App Replica 1] [App Replica 2] [App Replica 3]
+               \             |             /
+                +------------+------------+
+                |                         |
+                v                         v
+          [ PostgreSQL ]              [ Redis ]
+          (Durable DB)           (Cache & Rate Limit)
+```
+
+---
+
+## 🚀 Quick Start (Production Multi-Container Cluster)
+
+### 1. Launch with Docker Compose
+```bash
+# Start full stack: Nginx (Port 80), 3 App Replicas, PostgreSQL, and Redis
+docker compose up --build -d
+```
+
+### 2. Verify Everything is Running
+```bash
+# Check service health
+curl http://localhost/health/ready
+```
+
+### 3. Open Interactive Swagger Docs
+Navigate to: **[http://localhost/docs](http://localhost/docs)**
+
+---
+
+## 🧪 Run Automated Test Suite (79 Tests)
 
 ```bash
-# Clone
-git clone https://github.com/AnkitG7/fastapi-url-shortener-system-design.git
-cd fastapi-url-shortener-system-design
-
-# Start PostgreSQL and Redis via Docker
-docker compose up -d
-
-# Setup Virtual Environment
-python -m venv venv
+# Activate local virtual environment
 .\venv\Scripts\activate       # Windows
 # source venv/bin/activate    # Linux/Mac
 
-pip install -r requirements.txt
-
-# Run Database Migrations
-alembic upgrade head
-
-# Run Application
-uvicorn app.main:app --reload --port 8000
-
-# Open Swagger UI
-# http://localhost:8000/docs
-```
-
-## 🧪 Run Tests
-
-```bash
 pytest tests/ -v
 ```
 
-**79 tests** covering all endpoints, circuit breaker state machine, correlation ID tracing, health check probes, background worker batching, event bus queue backpressure, analytics aggregation, sliding window rate limits, SSRF security defenses, caching behaviors, database repository layer, service business logic, validation, and redirects.
+```
+============================= 79 passed in 14.97s =============================
+```
+
+---
 
 ## 📁 Project Structure
 
@@ -60,7 +83,7 @@ pytest tests/ -v
 │   ├── versions/            # Migration scripts
 │   └── env.py               # Migration environment configuration
 ├── app/
-│   ├── main.py              # FastAPI entry point, middleware, multi-resource & worker lifecycle
+│   ├── main.py              # FastAPI entry point, middleware, multi-resource lifecycle
 │   ├── dependencies.py      # Dependency injection (Auth, Rate Limiter, DB, Cache, Service)
 │   ├── core/
 │   │   ├── config.py        # Type-safe configuration (Pydantic Settings)
@@ -84,7 +107,7 @@ pytest tests/ -v
 │   ├── repositories/
 │   │   └── url_repository.py# Data Access Layer (Atomic updates, CRUD)
 │   ├── services/
-│   │   └── url_service.py   # Business Logic Layer (Cache-Aside + DB Orchestration)
+│   │   ├── url_service.py   # Business Logic Layer (Cache-Aside + DB Orchestration)
 │   │   └── analytics_service.py # Aggregation service (24h counts, referrers, user agents)
 │   ├── schemas/
 │   │   ├── url.py           # Request/Response data contracts
@@ -93,10 +116,14 @@ pytest tests/ -v
 │       ├── url.py           # Rate-limited and SSRF-protected route handlers
 │       ├── analytics.py     # Aggregated analytics reporting routes
 │       └── health.py        # /health/live and /health/ready diagnostic probes
+├── docs/
+│   └── architecture.md      # In-depth architectural design & capacity calculations
+├── nginx/
+│   └── nginx.conf           # Reverse proxy & load balancer configuration
 ├── tests/
 │   ├── conftest.py          # Isolated test DB, fake Redis, and rate limiter fixtures
-│   ├── test_observability.py# Tracing headers and health probes tests
 │   ├── test_circuit_breaker.py # Circuit breaker state transition tests
+│   ├── test_observability.py# Tracing headers and health probes tests
 │   ├── test_analytics.py    # AnalyticsWorker batching & aggregation query tests
 │   ├── test_event_bus.py    # EventBus Producer-Consumer queue & backpressure tests
 │   ├── test_cache.py        # Cache-Aside, TTL, and invalidation tests
@@ -109,15 +136,14 @@ pytest tests/ -v
 │   ├── test_validation.py   # Input validation & boundary tests
 │   ├── test_url_repository.py # Repository unit tests
 │   └── test_url_service.py    # Service domain rules tests
-├── docker-compose.yml       # Infrastructure as Code (PostgreSQL + Redis)
+├── Dockerfile               # Multi-stage container build
+├── docker-compose.yml       # Full-stack container orchestration
 ├── requirements.txt
 └── .env                     # Environment config (gitignored)
 ```
 
-## 📖 System Design Concepts in Phase 6
+---
 
-- **Structured JSON Logging** — Machine-readable logs containing timestamps, log levels, correlation IDs, and millisecond latencies for central ingestion in Datadog / Grafana Loki / ELK.
-- **Distributed Tracing & Correlation IDs** — Propagating `X-Correlation-ID` across HTTP headers, background workers, and logs to trace individual user requests across microservices.
-- **Liveness Probes (`/health/live`)** — Allows container orchestrators (Docker/Kubernetes) to detect deadlocked or hung processes and automatically restart them.
-- **Readiness Probes (`/health/ready`)** — Verifies PostgreSQL and Redis dependencies and latencies; load balancers automatically stop routing traffic to unhealthy instances.
-- **Circuit Breaker Pattern** — Prevents cascading system failures when downstream services fail by failing fast (`OPEN` state) and automatically recovering (`HALF_OPEN` -> `CLOSED`).
+## 📖 Deep-Dive Architecture Guide
+
+For mathematical capacity estimations (QPS, RAM, 5-year storage projections) and failure mode mitigations, see [docs/architecture.md](docs/architecture.md).
