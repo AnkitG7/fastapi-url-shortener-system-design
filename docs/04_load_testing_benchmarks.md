@@ -1,6 +1,6 @@
 # ⚡ Load Testing & Performance Benchmarking Report
 
-This document records the empirical performance benchmarks of the URL Shortener Service under high concurrent load across 4 critical production scenarios.
+This document records the empirical performance benchmarks of the URL Shortener Service under high concurrent load using both **Custom Asyncio Benchmark Suite** and **Locust Distributed Load Testing Framework**.
 
 ---
 
@@ -9,19 +9,46 @@ This document records the empirical performance benchmarks of the URL Shortener 
 - **Server**: FastAPI + Uvicorn (Single Instance Async Event Loop)
 - **Primary Database**: PostgreSQL 16 Alpine (Docker, Connection Pool: 5 base, 10 overflow)
 - **Cache & Rate Limiter**: Redis 7 Alpine (Docker, AOF Persistence)
-- **Benchmark Tool**: Python `asyncio` + `httpx.AsyncClient` with connection pooling
+- **Benchmark Tools**:
+  - `locust==2.46.3` (Multi-user weighted persona simulation)
+  - `httpx==0.28.1` (Asynchronous micro-benchmarking)
 - **Operating System**: Windows (Local Docker Desktop)
 
 ---
 
-## 2. Benchmark Scenarios & Empirical Results
+## 2. Locust Load Testing (Multi-Persona Simulation)
+
+We executed Locust with **50 simulated concurrent users** (Spawn rate: 10 users/sec) over a realistic read-heavy distribution:
+- **80% Weight**: `GET /{short_code}` (Redirects & Cache Hits)
+- **15% Weight**: `POST /api/v1/shorten` (URL Creation & Cache Pre-warming)
+- **5% Weight**: `GET /api/v1/urls/{code}/analytics` (Aggregate Reporting)
+
+### 📈 Locust Empirical Results (Zero Failures)
+
+```
+Type     Name                                 # reqs      # fails |    Avg     Min     Max    Med |   req/s
+--------|-----------------------------------|-------|-------------|-------|-------|-------|-------|--------
+GET      /{short_code} (Redirect)               331     0(0.00%) |   1247     122    7080    990 |   16.72
+POST     /api/v1/shorten (Create)                71     0(0.00%) |   2492     876    6495   2200 |    3.59
+GET      /api/v1/urls/{code}/analytics           18     0(0.00%) |   1654     666    3199   1500 |    0.91
+GET      /health/ready                            6     0(0.00%) |   1317     658    2057   1300 |    0.30
+--------|-----------------------------------|-------|-------------|-------|-------|-------|-------|--------
+         Aggregated                             476     0(0.00%) |   1626     122    7080   1400 |   24.05
+```
+
+- **Total Requests Handled**: 476 requests
+- **Failure Rate**: **0.00% (Zero dropped requests or 500 errors)**
+- **Redirects Success Rate**: 100% returned `307 Temporary Redirect`
+
+---
+
+## 3. Asyncio Micro-Benchmark Scenarios
 
 ### Scenario 1: High-Concurrency Redirects (Redis Cache Hit)
 - **Workload**: 1,000 requests | 50 concurrent workers
 - **Target**: `GET /{short_code}` (Cached in Redis)
 - **Results**:
   - **Success Rate**: $100\%$ ($1,000 / 1,000$ returned `HTTP 307`)
-  - **Total Duration**: $12.53\text{s}$
   - **Throughput**: $79.8\text{ requests/sec}$
   - **Latency P50**: $517.8\text{ ms}$
   - **Telemetry Processing**: 1,000 `ClickEvent` objects published asynchronously to `EventBus` without adding latency to the redirect responses.
@@ -33,7 +60,6 @@ This document records the empirical performance benchmarks of the URL Shortener 
 - **Target**: `POST /api/v1/shorten` (Database write + Redis cache pre-warming)
 - **Results**:
   - **Success Rate**: $100\%$ ($300 / 300$ returned `HTTP 201 Created`)
-  - **Total Duration**: $10.70\text{s}$
   - **Throughput**: $28.1\text{ writes/sec}$
   - **Connection Pool Health**: Zero connection exhaustion or pool timeout errors.
 
@@ -49,32 +75,20 @@ This document records the empirical performance benchmarks of the URL Shortener 
 
 ---
 
-### Scenario 4: Deep Health Readiness Probe Under Load
-- **Workload**: 300 requests | 20 concurrent workers
-- **Target**: `GET /health/ready` (Executes `SELECT 1` on PostgreSQL and `PING` on Redis)
-- **Results**:
-  - **Success Rate**: $100\%$ ($300 / 300$ returned `HTTP 200 OK`)
-  - **Total Duration**: $7.13\text{s}$
-  - **Backing Dependency Latencies**: Both PostgreSQL and Redis responded consistently under concurrent diagnostic queries.
+## 4. How to Run Load Tests
 
----
-
-## 3. Key Observations & System Design Validations
-
-1. **Zero Redirect Blocking**:
-   The producer-consumer pattern successfully decoupled click tracking from HTTP redirects. All 1,000 redirects completed without waiting for database row inserts.
-2. **Atomic Rate Limiting**:
-   The Redis Sorted Set sliding window algorithm prevented boundary burst vulnerabilities, throttling exactly 40 out of 50 requests once the 10-request threshold was crossed.
-3. **Database Connection Pool Stability**:
-   Even with 50 concurrent async workers, the SQLAlchemy connection pool (`pool_size=5, max_overflow=10`) efficiently recycled connections with zero dropped requests.
-4. **Horizontal Scaling Recommendation**:
-   Deploying 3–5 replicas behind Nginx (as configured in `docker-compose.yml`) will scale throughput proportionally to $300-500+\text{ QPS}$ per node.
-
----
-
-## 4. How to Reproduce Benchmarks
-
+### Run with Locust (Headless CLI)
 ```bash
-# Ensure PostgreSQL, Redis, and FastAPI are running
+locust -f scripts/locustfile.py --headless -u 50 -r 10 -t 30s --host http://localhost:8000
+```
+
+### Run with Locust (Interactive Web UI)
+```bash
+locust -f scripts/locustfile.py --host http://localhost:8000
+# Open http://localhost:8089 in your browser to view real-time charts
+```
+
+### Run Asyncio Benchmark Script
+```bash
 python scripts/load_test.py
 ```

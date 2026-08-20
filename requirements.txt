@@ -26,11 +26,13 @@ python-dotenv==1.0.1      # Load .env files into environment variables
 shortuuid==1.0.13         # Generate short, unique IDs for our URLs
 pydantic-settings==2.5.2  # Type-safe settings management
 
-# Testing
+# Testing & Benchmarking
 pytest==9.1.1             # Test runner
 pytest-asyncio==1.4.0     # Async test support for pytest
 pytest-cov==7.1.0         # Test coverage reporting
 httpx==0.28.1             # HTTP client for TestClient
 fakeredis==2.26.1         # In-memory fake Redis for test isolation
+locust==2.46.3            # Distributed load testing framework
+
 
 
