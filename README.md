@@ -60,18 +60,19 @@ Navigate to: **[http://localhost/docs](http://localhost/docs)**
 
 ---
 
-## 🧪 Run Automated Test Suite (79 Tests)
+## 🧪 Run Automated Test Suite (85 Tests, 90% Coverage)
 
 ```bash
 # Activate local virtual environment
 .\venv\Scripts\activate       # Windows
 # source venv/bin/activate    # Linux/Mac
 
-pytest tests/ -v
+pytest tests/ -v --cov=app --cov-report=term-missing
 ```
 
 ```
-============================= 79 passed in 14.97s =============================
+============================= 85 passed in 16.26s =============================
+TOTAL COVERAGE: 90%
 ```
 
 ---
